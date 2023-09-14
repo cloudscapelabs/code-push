@@ -1,5 +1,5 @@
 {
-  "name": "code-push",
+  "name": "@cloudscapelabs/code-push",
   "version": "4.2.0",
   "description": "Management SDK for the CodePush service",
   "main": "script/index.js",
