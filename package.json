@@ -1,6 +1,6 @@
 {
   "name": "@cloudscapelabs/code-push",
-  "version": "4.2.0-csl2",
+  "version": "4.2.1-csl1",
   "description": "Management SDK for the CodePush service",
   "main": "src/script/index.js",
   "types": "src/script/index.d.ts",
@@ -10,7 +10,8 @@
     "prebuild": "npm run clean",
     "build": "tsc && npm run content",
     "prebuild:release": "npm run clean",
-    "build:release": "tsc -p ./tsconfig-release.json && npm run content",
+    "build:release": "tsc -p ./tsconfig-release.json && npm run check:release && npm run content",
+    "check:release" : "npx ts-node .github/scripts/check-for-declaration.ts",
     "release": "npm run clean && npm run build:release && cd bin && npm publish",
     "test": "npm run build && mocha --recursive bin/test",
     "test:debugger": "mocha --recursive --inspect-brk=0.0.0.0 bin/test",
