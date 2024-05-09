@@ -2,8 +2,8 @@
   "name": "@cloudscapelabs/code-push",
   "version": "4.2.1-csl1",
   "description": "Management SDK for the CodePush service",
-  "main": "src/script/index.js",
-  "types": "src/script/index.d.ts",
+  "main": "script/index.js",
+  "types": "script/index.d.ts",
   "scripts": {
     "clean": "shx rm -rf bin",
     "setup": "npm install --quiet --no-progress",
