@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import slash = require("slash");
 import * as recursiveFs from "recursive-fs";
 import * as yazl from "yazl";
@@ -8,7 +9,7 @@ import RequestManager from "../utils/request-manager"
 import { CodePushUnauthorizedError } from "./code-push-error"
 import FileUploadClient, { IProgress } from "appcenter-file-upload-client";
 
-import { AccessKey, AccessKeyRequest, Account, App, AppCreationRequest, CollaboratorMap, Deployment, DeploymentMetrics, Headers, Package, PackageInfo, ReleaseUploadAssets, UploadReleaseProperties, CodePushError } from "./types";
+import { AccessKey, AccessKeyRequest, Account, App, AppCreationRequest, CollaboratorMap, Deployment, DeploymentMetrics, Headers, Package, PackageInfo, ReleaseUploadAssets, UploadReleaseProperties, CodePushError, ServerAccessKey } from "./types";
 
 interface JsonResponse {
     headers: Headers;
@@ -62,7 +63,7 @@ class AccountManager {
         let codePushError: CodePushError;
 
         try {
-            res = await this._requestManager.get(urlEncode`/user`, false);
+            res = await this._requestManager.get(urlEncode`/authenticated`, false);
         } catch (error) {
             codePushError = error as CodePushError;
             if (codePushError && (codePushError.statusCode !== RequestManager.ERROR_UNAUTHORIZED || throwIfUnauthorized)) {
@@ -82,242 +83,228 @@ class AccountManager {
         }
 
         const accessKeyRequest: AccessKeyRequest = {
-            description: friendlyName
+            createdBy: os.hostname(),
+            friendlyName,
+            ttl
         };
 
-        const res: JsonResponse = await this._requestManager.post(urlEncode`/api_tokens`, JSON.stringify(accessKeyRequest), /*expectResponseBody=*/ true);
-        const accessKey = this._adapter.toLegacyAccessKey(res.body);
-        return accessKey;
+        const res: JsonResponse = await this._requestManager.post(urlEncode`/accessKeys`, JSON.stringify(accessKeyRequest), /*expectResponseBody=*/ true);
+        return {
+            createdTime: res.body.accessKey.createdTime,
+            expires: res.body.accessKey.expires,
+            key: res.body.accessKey.name,
+            name: res.body.accessKey.friendlyName
+        };
+    }
+
+    public async getAccessKey(accessKeyName: string): Promise<AccessKey> {
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/accessKeys/${accessKeyName}`);
+
+        return {
+            createdTime: res.body.accessKey.createdTime,
+            expires: res.body.accessKey.expires,
+            name: res.body.accessKey.friendlyName,
+        };
     }
 
     public async getAccessKeys(): Promise<AccessKey[]> {
-        const res: JsonResponse = await this._requestManager.get(urlEncode`/api_tokens`);
-        const accessKeys = this._adapter.toLegacyAccessKeyList(res.body);
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/accessKeys`);
+
+        const accessKeys: AccessKey[] = [];
+        res.body.accessKeys.forEach((serverAccessKey: ServerAccessKey) => {
+            !serverAccessKey.isSession && accessKeys.push({
+                createdTime: serverAccessKey.createdTime,
+                expires: serverAccessKey.expires,
+                name: serverAccessKey.friendlyName
+            });
+        });
+
         return accessKeys;
     }
 
-    public async removeAccessKey(name: string): Promise<void> {
-        const accessKey = await this._adapter.resolveAccessKey(name);
+    public async patchAccessKey(oldName: string, newName?: string, ttl?: number): Promise<AccessKey> {
+        var accessKeyRequest: AccessKeyRequest = {
+            friendlyName: newName,
+            ttl
+        };
 
-        await this._requestManager.del(urlEncode`/api_tokens/${accessKey.id}`);
+        const res: JsonResponse = await this._requestManager.patch(urlEncode`/accessKeys/${oldName}`, JSON.stringify(accessKeyRequest));
+
+        return {
+            createdTime: res.body.accessKey.createdTime,
+            expires: res.body.accessKey.expires,
+            name: res.body.accessKey.friendlyName,
+        };
+    }
+
+    public async removeAccessKey(name: string): Promise<void> {
+        await this._requestManager.del(urlEncode`/accessKeys/${name}`);
         return null;
     }
 
     // Account
     public async getAccountInfo(): Promise<Account> {
-        const res: JsonResponse = await this._requestManager.get(urlEncode`/user`);
-        const accountInfo = this._adapter.toLegacyAccount(res.body);
-        return accountInfo;
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/account`);
+        return res.body.account;
     }
 
     // Apps
     public async getApps(): Promise<App[]> {
         const res: JsonResponse = await this._requestManager.get(urlEncode`/apps`);
-        const apps = await this._adapter.toLegacyApps(res.body);
-        return apps;
+        return res.body.apps;
     }
 
     public async getApp(appName: string): Promise<App> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}`);
-        const app = await this._adapter.toLegacyApp(res.body);
-        return app;
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appName}`);
+        return res.body.app;
     }
 
     public async addApp(appName: string, appOs: string, appPlatform: string, manuallyProvisionDeployments: boolean = false): Promise<App> {
-        var app: AppCreationRequest = {
+        const app: AppCreationRequest = {
             name: appName,
             os: appOs,
             platform: appPlatform,
             manuallyProvisionDeployments: manuallyProvisionDeployments
         };
 
-        const apigatewayAppCreationRequest = this._adapter.toApigatewayAppCreationRequest(app);
+        await this._requestManager.post(urlEncode`/apps/`, JSON.stringify(app), false);
 
-        const path = apigatewayAppCreationRequest.org ? `/orgs/${apigatewayAppCreationRequest.org}/apps` : `/apps`;
-        await this._requestManager.post(path, JSON.stringify(apigatewayAppCreationRequest.appcenterClientApp), /*expectResponseBody=*/ false);
-
-        if (!manuallyProvisionDeployments) {
-            await this._adapter.addStandardDeployments(appName);
-        }
-        return app;
+        return app
     }
 
     public async removeApp(appName: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        await this._requestManager.del(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}`);
+        await this._requestManager.del(urlEncode`/apps/${appName}`);
         return null;
     }
 
     public async renameApp(oldAppName: string, newAppName: string): Promise<void> {
-        const { appOwner, appName } = await this._adapter.parseApiAppName(oldAppName);
-        const updatedApp = await this._adapter.getRenamedApp(newAppName, appOwner, appName);
+        const body = { name: newAppName }
 
-        await this._requestManager.patch(urlEncode`/apps/${appOwner}/${appName}`, JSON.stringify(updatedApp));
+        await this._requestManager.patch(urlEncode`/apps/${oldAppName}`, JSON.stringify(body));
         return null;
     }
 
     public async transferApp(appName: string, orgName: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-
-        await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/transfer/${orgName}`, /*requestBody=*/ null, /*expectResponseBody=*/ false);
+        await this._requestManager.post(urlEncode`/apps/${appName}/transfer/${orgName}`, /*requestBody=*/ null, /*expectResponseBody=*/ false);
         return null;
     }
 
     // Collaborators
     public async getCollaborators(appName: string): Promise<CollaboratorMap> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-
-        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/users`);
-        const collaborators = await this._adapter.toLegacyCollaborators(res.body, appParams.appOwner);
-        return collaborators;
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appName}/collaborators`);
+        return res.body.collaborators;
     }
 
     public async addCollaborator(appName: string, email: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const userEmailRequest = {
-            user_email: email
-        };
-        await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/invitations`, JSON.stringify(userEmailRequest), /*expectResponseBody=*/ false);
+        await this._requestManager.post(urlEncode`/apps/${appName}/collaborators/${email}`, null, /*expectResponseBody=*/ false);
         return null;
     }
 
     public async removeCollaborator(appName: string, email: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-
-        await this._requestManager.del(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/invitations/${email}`);
+        await this._requestManager.del(urlEncode`/apps/${appName}/collaborators/${email}`);
         return null;
     }
 
     // Deployments
     public async addDeployment(appName: string, deploymentName: string): Promise<Deployment> {
         const deployment = <Deployment>{ name: deploymentName };
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const res = await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/`, JSON.stringify(deployment), /*expectResponseBody=*/ true);
+        const res = await this._requestManager.post(urlEncode`/apps/${appName}/deployments/`, JSON.stringify(deployment), /*expectResponseBody=*/ true);
 
-        return this._adapter.toLegacyDeployment(res.body);
+        return res.body.deployment;
     }
 
     public async clearDeploymentHistory(appName: string, deploymentName: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-
-        await this._requestManager.del(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/releases`);
+        await this._requestManager.del(urlEncode`/apps/${appName}/deployments/${deploymentName}/releases`);
         return null;
     }
 
     public async getDeployments(appName: string): Promise<Deployment[]> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/`);
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appName}/deployments/`);
 
-        return this._adapter.toLegacyDeployments(res.body);
+        return res.body.deployment;
     }
 
     public async getDeployment(appName: string, deploymentName: string): Promise<Deployment> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}`);
+        const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appName}/deployments/${deploymentName}`);
 
-        return this._adapter.toLegacyDeployment(res.body);
+        return res.body.deployment;
     }
 
     public async renameDeployment(appName: string, oldDeploymentName: string, newDeploymentName: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        await this._requestManager.patch(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${oldDeploymentName}`, JSON.stringify({ name: newDeploymentName }));
+        await this._requestManager.patch(urlEncode`/apps/${appName}/deployments/${oldDeploymentName}`, JSON.stringify({ name: newDeploymentName }));
 
         return null;
     }
 
     public async removeDeployment(appName: string, deploymentName: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        await this._requestManager.del(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}`);
+        await this._requestManager.del(urlEncode`/apps/${appName}/deployments/${deploymentName}`);
 
         return null;
     }
 
     public async getDeploymentMetrics(appName: string, deploymentName: string): Promise<DeploymentMetrics> {
-        const appParams = await this._adapter.parseApiAppName(appName);
+        const res = await this._requestManager.get(urlEncode`/apps/${appName}/deployments/${deploymentName}/metrics`);
 
-        const res = await this._requestManager.get(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/metrics`);
-        const deploymentMetrics = this._adapter.toLegacyDeploymentMetrics(res.body);
-        return deploymentMetrics;
+        return res.body.metrics;
     }
 
     public async getDeploymentHistory(appName: string, deploymentName: string): Promise<Package[]> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const res = await this._requestManager.get(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/releases`);
+        const res = await this._requestManager.get(urlEncode`/apps/${appName}/deployments/${deploymentName}/history`);
 
-        return this._adapter.toLegacyDeploymentHistory(res.body);
+        return res.body.history;
     }
 
     // Releases
     public async release(appName: string, deploymentName: string, filePath: string, targetBinaryVersion: string, updateMetadata: PackageInfo, uploadProgressCallback?: (progress: number) => void): Promise<Package> {
         updateMetadata.appVersion = targetBinaryVersion;
         const packageFile: PackageFile = await this.packageFileFromPath(filePath);
-        const appParams = await this._adapter.parseApiAppName(appName);
 
-        const assetJsonResponse: JsonResponse = await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/uploads`, null, true)
-        const assets = assetJsonResponse.body as ReleaseUploadAssets;
+        const request = this._requestManager.getRequest('post', urlEncode`/apps/${appName}/deployments/${deploymentName}/release`)
 
-        await this._fileUploadClient.upload({
-            assetId: assets.id,
-            assetDomain: assets.upload_domain,
-            assetToken: assets.token,
-            file: packageFile.path,
-            onProgressChanged: (progressData: IProgress) => {
-                if (uploadProgressCallback) {
-                    uploadProgressCallback(progressData.percentCompleted);
-                }
-            },
-        });
+        const file = fs.createReadStream(packageFile.path);
+        const response = await request.attach('package', file)
+        .field('packageInfo', JSON.stringify(updateMetadata))
+        .on('progress', (event: any) => {
+            if (uploadProgressCallback && event && event.total > 0) {
+                var currentProgress: number = event.loaded / event.total * 100;
+                uploadProgressCallback(currentProgress);
+            }
+        })
 
-        const releaseUploadProperties: UploadReleaseProperties = this._adapter.toReleaseUploadProperties(updateMetadata, assets, deploymentName);
-        const releaseJsonResponse: JsonResponse = await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/releases`, JSON.stringify(releaseUploadProperties), true);
-        const releasePackage: Package = this._adapter.releaseToPackage(releaseJsonResponse.body);
-
-        return releasePackage;
+        const body = JSON.parse(response.text);
+        if (response.ok) {
+            return body.package;
+        } else {
+            throw new Error(body.message);
+        }
     }
 
     public async patchRelease(appName: string, deploymentName: string, label: string, updateMetadata: PackageInfo): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const requestBody = this._adapter.toRestReleaseModification(updateMetadata);
+        updateMetadata.label = label;
+        const requestBody = { packageInfo: updateMetadata }
 
-        await this._requestManager.patch(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/releases/${label}`, JSON.stringify(requestBody), /*expectResponseBody=*/ false)
+        await this._requestManager.patch(urlEncode`/apps/${appName}/deployments/${deploymentName}/release`, JSON.stringify(requestBody), /*expectResponseBody=*/ false)
         return null;
     }
 
     public async promote(appName: string, sourceDeploymentName: string, destinationDeploymentName: string, updateMetadata: PackageInfo): Promise<Package> {
-        const appParams = await this._adapter.parseApiAppName(appName);
-        const requestBody = this._adapter.toRestReleaseModification(updateMetadata);
-        const res = await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${sourceDeploymentName}/promote_release/${destinationDeploymentName}`, JSON.stringify(requestBody), /*expectResponseBody=*/ true);
-        const releasePackage: Package = this._adapter.releaseToPackage(res.body);
+        const requestBody = { packageInfo: updateMetadata };
+        const res = await this._requestManager.post(urlEncode`/apps/${appName}/deployments/${sourceDeploymentName}/promote/${destinationDeploymentName}`, JSON.stringify(requestBody), /*expectResponseBody=*/ true);
 
-        return releasePackage;
+        return res.body.package;
     }
 
     public async rollback(appName: string, deploymentName: string, targetRelease?: string): Promise<void> {
-        const appParams = await this._adapter.parseApiAppName(appName);
         const requestBody = targetRelease ? {
             label: targetRelease
         } : {};
 
-        await this._requestManager.post(urlEncode`/apps/${appParams.appOwner}/${appParams.appName}/deployments/${deploymentName}/rollback_release`, JSON.stringify(requestBody), /*expectResponseBody=*/ false);
+        await this._requestManager.post(urlEncode`/apps/${appName}/deployments/${deploymentName}/rollback`, JSON.stringify(requestBody), /*expectResponseBody=*/ false);
         return null;
     }
 
     // Deprecated
-    public getAccessKey(accessKeyName: string): CodePushError {
-        throw {
-            message: 'Method is deprecated',
-            statusCode: 404
-        }
-    }
-
-    // Deprecated
     public getSessions(): CodePushError {
-        throw this.getDeprecatedMethodError();
-    }
-
-    // Deprecated
-    public patchAccessKey(oldName: string, newName?: string, ttl?: number): CodePushError {
         throw this.getDeprecatedMethodError();
     }
 
