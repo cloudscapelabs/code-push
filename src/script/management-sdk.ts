@@ -9,7 +9,7 @@ import RequestManager from "../utils/request-manager"
 import { CodePushUnauthorizedError } from "./code-push-error"
 import FileUploadClient, { IProgress } from "appcenter-file-upload-client";
 
-import { AccessKey, AccessKeyRequest, Account, App, AppCreationRequest, CollaboratorMap, Deployment, DeploymentMetrics, Headers, Package, PackageInfo, ReleaseUploadAssets, UploadReleaseProperties, CodePushError, ServerAccessKey } from "./types";
+import { AccessKey, AccessKeyRequest, Account, App, AppCreationRequest, CollaboratorMap, Deployment, DeploymentMetrics, Headers, Package, PackageInfo, ReleaseUploadAssets, UploadReleaseProperties, CodePushError, ServerAccessKey, Session } from "./types";
 
 interface JsonResponse {
     headers: Headers;
@@ -137,9 +137,36 @@ class AccountManager {
         };
     }
 
+    public async getSessions(): Promise<Session[]> {
+        const res = await this._requestManager.get(urlEncode`/accessKeys`)
+
+        // A machine name might be associated with multiple session keys,
+        // but we should only return one per machine name.
+        const sessionMap: { [machineName: string]: Session } = {};
+        const now: number = new Date().getTime();
+        res.body.accessKeys.forEach((serverAccessKey: ServerAccessKey) => {
+            if (serverAccessKey.isSession && serverAccessKey.expires > now) {
+                sessionMap[serverAccessKey.createdBy] = {
+                    loggedInTime: serverAccessKey.createdTime,
+                    machineName: serverAccessKey.createdBy
+                };
+            }
+        });
+
+        const sessions: Session[] = Object.keys(sessionMap)
+            .map((machineName: string) => sessionMap[machineName]);
+
+        return sessions;
+    }
+
     public async removeAccessKey(name: string): Promise<void> {
         await this._requestManager.del(urlEncode`/accessKeys/${name}`);
         return null;
+    }
+
+    public async removeSession(machineName: string): Promise<void> {
+        await this._requestManager.del(urlEncode`/accessKeys/${machineName}`);
+        return null
     }
 
     // Account
@@ -301,16 +328,6 @@ class AccountManager {
 
         await this._requestManager.post(urlEncode`/apps/${appName}/deployments/${deploymentName}/rollback`, JSON.stringify(requestBody), /*expectResponseBody=*/ false);
         return null;
-    }
-
-    // Deprecated
-    public getSessions(): CodePushError {
-        throw this.getDeprecatedMethodError();
-    }
-
-    // Deprecated
-    public removeSession(machineName: string): CodePushError {
-        throw this.getDeprecatedMethodError();
     }
 
     private packageFileFromPath(filePath: string): Promise<PackageFile> {
