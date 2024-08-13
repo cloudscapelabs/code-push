@@ -1,6 +1,6 @@
 {
   "name": "@cloudscapelabs/code-push",
-  "version": "4.2.1-csl2",
+  "version": "4.2.1-csl3",
   "description": "Management SDK for the CodePush service",
   "main": "script/index.js",
   "types": "script/index.d.ts",
