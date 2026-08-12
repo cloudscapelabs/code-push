@@ -248,7 +248,7 @@ class AccountManager {
     public async getDeployments(appName: string): Promise<Deployment[]> {
         const res: JsonResponse = await this._requestManager.get(urlEncode`/apps/${appName}/deployments/`);
 
-        return res.body.deployment;
+        return res.body.deployments;
     }
 
     public async getDeployment(appName: string, deploymentName: string): Promise<Deployment> {
